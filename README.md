@@ -1,11 +1,11 @@
 # Cellhasher-Helper-Scripts
 Cellhasher Helper Scripts
 
-# XMRig Termux Builder for Cellhasher
+## XMRig Termux Builder for Cellhasher
 
 This script installs and compiles XMRig inside Termux on Android devices connected through ADB. You run the script from Cellhasher using the Python Script option.
 
-## Requirements
+### Requirements
 
 - ADB installed on your PC.
 - Termux installed on each phone.
@@ -13,7 +13,7 @@ This script installs and compiles XMRig inside Termux on Android devices connect
 - Cellhasher installed with ADB path configured.
 - Python scripting enabled in Cellhasher.
 
-## Prepare Termux on the phone
+### Prepare Termux on the phone
 
 Open Termux once on the phone, then run:
 
@@ -23,7 +23,7 @@ pkg upgrade
 
 This completes the one-time setup.
 
-## Verify ADB connectivity
+### Verify ADB connectivity
 
 On your PC:
 
@@ -32,7 +32,7 @@ adb devices
 Your device must appear with the status device.
 If it shows unauthorized, unlock the phone and accept the debugging prompt.
 
-## Verify Termux can run through ADB
+### Verify Termux can run through ADB
 
 Run:
 
@@ -41,7 +41,7 @@ adb -s DEVICE_ID shell run-as com.termux id
 You should see uid and group information.
 If it prints that the package is not debuggable, reinstall Termux from the GitHub release.
 
-## Install the script into Cellhasher
+### Install the script into Cellhasher
 
 1. Save the Python script as xmrig_setup_termux.py.
 2. Open Cellhasher.
@@ -52,14 +52,14 @@ If it prints that the package is not debuggable, reinstall Termux from the GitHu
 
 The script will now appear in your script list inside Cellhasher.
 
-## Running the script in Cellhasher
+### Running the script in Cellhasher
 
 1. Select the target devices in the Devices panel.
 2. Select the script.
 3. Click Run.
 4. Watch the output log for each command and return code.
 
-## What the script does
+### What the script does
 
 Inside Termux, the script:
 
@@ -77,9 +77,9 @@ bash -l -c "command"
 
 The -l flag loads the Termux login environment so apt, git, and other packages work.
 
-## Troubleshooting
+### Troubleshooting
 
-### Commands fail with return code 1
+#### Commands fail with return code 1
 
 Confirm Termux can run through ADB:
 
@@ -87,7 +87,7 @@ adb -s DEVICE_ID shell run-as com.termux id
 
 If this fails, reinstall Termux.
 
-### apt or git not found
+#### apt or git not found
 
 Check the executable paths:
 
@@ -95,7 +95,7 @@ adb -s DEVICE_ID shell run-as com.termux /data/data/com.termux/files/usr/bin/bas
 
 If no path prints, Termux is not initialized correctly.
 
-### Build directory already exists
+#### Build directory already exists
 
 The script skips cloning if the folder exists.
 To rebuild from scratch, remove the directory:
