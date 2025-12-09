@@ -39,24 +39,27 @@ def run_in_termux(serial, cmd):
 
 
 def setup_xmrig(serial):
-    commands = [
-        "echo 'Testing Termux environment'",
-        "apt update -y",
-        "apt upgrade -y",
-        "apt install git proot cmake figlet -y",
-        "figlet -f small 'Cloning repository'",
-        "git clone https://github.com/xmrig/xmrig || true",
-        "mkdir -p xmrig/build",
-        "cd xmrig/build && figlet -f small 'Compiling xmrig' && cmake -DWITH_HWLOC=OFF .. && make -j$(nproc)",
-        "figlet -f small 'Done compiling'",
-        "apt remove figlet -y",
-        "echo 'Removed extra packages'",
-    ]
+    full_script = (
+        "cd $HOME && "
+        "pkg update -y && "
+        "pkg upgrade -y && "
+        "pkg install git proot cmake figlet -y && "
+        "apt update -y && "
+        "apt upgrade -y && "
+        "apt install git proot cmake figlet -y && "
+        "git clone https://github.com/xmrig/xmrig || true && "
+        "cd xmrig && mkdir -p build && cd build && "
+        "figlet 'Compiling' && "
+        "cmake -DWITH_HWLOC=OFF .. && "
+        "make -j$(nproc) && "
+        "figlet 'Done' && "
+        "pkg remove figlet -y && "
+        "echo 'Build complete'"
+    )
 
-    for cmd in commands:
-        rc = run_in_termux(serial, cmd)
-        if rc != 0:
-            print(f"[{serial}] Command failed with code {rc}")
+    rc = run_in_termux(serial, full_script)
+    if rc != 0:
+        print(f"[{serial}] XMRig setup script failed with code {rc}")
 
 
 def main():
