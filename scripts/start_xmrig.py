@@ -1,88 +1,96 @@
-import os, time, subprocess, tempfile
+import os, time, subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ADB = os.environ.get("adb_path", "adb")
 devices = os.environ.get("devices", "").split()
+wallet_address = os.environ.get("wallet_address", "")
+pool_url = os.environ.get("pool_url", "")
+threads = os.environ.get("threads", "8")
+algorithm = os.environ.get("algorithm", "")  # Optional algorithm
+password = os.environ.get("password", "")  # Optional password/worker name
+cpu_max_threads_hint = os.environ.get("cpu_max_threads_hint", "")  # Optional % CPU usage
+xmrig_algorithm = os.environ.get("xmrig_algorithm", "")  # XMRIG-specific algorithm (-a flag)
+custom_flags = os.environ.get("custom_flags", "")  # Additional custom XMRIG flags
+additional_flags = os.environ.get("additional_flags", "")
 
-start_script_content = r'''#!/data/data/com.termux/files/usr/bin/bash
-set -e
-
-export HOME="/data/data/com.termux/files/home"
-cd "$HOME"
-
-LOG="$HOME/xmrig_start.log"
-
-echo "===== XMRIG START $(date) =====" | tee "$LOG"
-echo "[*] HOME=$HOME" | tee -a "$LOG"
-
-if [ ! -d "$HOME/xmrig" ]; then
-  echo "[!] ~/xmrig directory not found" | tee -a "$LOG"
-  exit 1
-fi
-
-cd "$HOME/xmrig"
-
-BIN=""
-if [ -x "$HOME/xmrig/xmrig" ]; then
-  BIN="$HOME/xmrig/xmrig"
-  echo "[*] Using binary: $BIN" | tee -a "$LOG"
-elif [ -x "$HOME/xmrig/build/xmrig" ]; then
-  BIN="$HOME/xmrig/build/xmrig"
-  echo "[*] Using binary: $BIN" | tee -a "$LOG"
-else
-  echo "[!] No xmrig binary found in ./ or ./build" | tee -a "$LOG"
-  exit 1
-fi
-
-echo "[*] Starting miner..." | tee -a "$LOG"
-echo "[*] Command:" | tee -a "$LOG"
-echo "$BIN -o stratum+tcp://<POOL> -u <WALLET_ADDRESS> -k -t 8 -a RandomX -p x" | tee -a "$LOG"
-
-exec "$BIN" -o stratum+tcp://<POOL> \
-  -u <WALLET_ADDRESS> \
-  -k -t 8 -a RandomX -p x
-'''
-
-def start_on_device(device_id, script_path):
+def run_mining_on_device(device_id):
+    """Start XMRIG mining on a single device"""
     try:
-        print(f"[{device_id}] Preparing to start xmrig...")
+        print(f"[{device_id}] Starting XMRIG mining...")
 
-        remote = "/data/local/tmp/xmrig_start.sh"
-        print(f"[{device_id}] Pushing start script...")
-        subprocess.run(f'{ADB} -s {device_id} push "{script_path}" "{remote}"', shell=True, check=True)
-        subprocess.run(f"{ADB} -s {device_id} shell chmod 755 {remote}", shell=True, check=True)
+        # Construct the mining command
+        mining_cmd = f"./xmrig -o {pool_url} -u {wallet_address} -k -t {threads}"
+
+        # Add XMRIG-specific algorithm if specified (takes precedence over general algorithm)
+        if xmrig_algorithm:
+            mining_cmd += f" -a {xmrig_algorithm}"
+        elif algorithm:
+            mining_cmd += f" -a {algorithm}"
+
+        # Add CPU max threads hint only if specified (XMRIG defaults to 100% if not set)
+        if cpu_max_threads_hint:
+            mining_cmd += f" --cpu-max-threads-hint={cpu_max_threads_hint}"
+
+        # Add password/worker name if provided
+        if password:
+            mining_cmd += f" -p {password}"
+
+        # Add custom flags if provided
+        if custom_flags:
+            mining_cmd += f" {custom_flags}"
+
+        print(f"[{device_id}] Mining command: {mining_cmd}")
+
+        print(f"[{device_id}] Force stopping Termux...")
+        subprocess.run(f"{ADB} -s {device_id} shell am force-stop com.termux", shell=True)
+        time.sleep(2)
 
         print(f"[{device_id}] Launching Termux...")
         subprocess.run(f"{ADB} -s {device_id} shell am start -n com.termux/com.termux.app.TermuxActivity", shell=True)
-        time.sleep(3)
+        time.sleep(10)  # Wait 10 seconds for Termux to fully initialize
 
-        typed = "bash%s/data/local/tmp/xmrig_start.sh"
-        print(f"[{device_id}] Executing xmrig_start.sh inside Termux...")
-        subprocess.run(f'{ADB} -s {device_id} shell input text "{typed}"', shell=True)
+        print(f"[{device_id}] Navigating to xmrig directory...")
+        # First navigate to the xmrig directory
+        cd_cmd = "cd%sxmrig"
+        subprocess.run(f"{ADB} -s {device_id} shell input text \"{cd_cmd}\"", shell=True)
+        time.sleep(1)
+        subprocess.run(f"{ADB} -s {device_id} shell input keyevent 66", shell=True)
+        time.sleep(2)
+
+        # Now run the mining command (without the ~/xmrig/ prefix since we're already in the directory)
+        escaped_cmd = mining_cmd.replace(" ", "%s")
+        subprocess.run(f"{ADB} -s {device_id} shell input text \"{escaped_cmd}\"", shell=True)
         time.sleep(1)
         subprocess.run(f"{ADB} -s {device_id} shell input keyevent 66", shell=True)
 
-        print(f"[{device_id}] Start command sent.")
-        return f"[{device_id}] OK"
+        print(f"[{device_id}] Keeping device screen on...")
+        subprocess.run(f"{ADB} -s {device_id} shell svc power stayon true", shell=True)
 
+        print(f"[{device_id}] XMRIG mining initiated successfully!")
+        return f"[{device_id}] Mining started"
     except Exception as e:
-        print(f"[{device_id}] ERROR: {e}")
-        return f"[{device_id}] ERROR: {e}"
+        print(f"[{device_id}] Error starting mining: {e}")
+        return f"[{device_id}] Error: {e}"
 
-with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", delete=False, suffix=".sh") as f:
-    f.write(start_script_content)
-    local_script_path = f.name
+print("=== Starting XMRIG Mining (Parallel) ===")
 
 if not devices:
-    print("No devices in $devices")
+    print("No devices specified in $devices environment variable")
+elif not wallet_address:
+    print("No wallet address specified in $wallet_address environment variable")
+elif not pool_url:
+    print("No pool URL specified in $pool_url environment variable")
 else:
-    print(f"Saved xmrig start script to {local_script_path}")
-    print("=== Starting XMRIG on Devices ===")
+    # Process all devices in parallel
+    with ThreadPoolExecutor(max_workers=len(devices)) as executor:
+        future_to_device = {executor.submit(run_mining_on_device, device_id): device_id for device_id in devices}
 
-    with ThreadPoolExecutor(max_workers=max(1, len(devices))) as executor:
-        futures = {executor.submit(start_on_device, d, local_script_path): d for d in devices}
-        for fut in as_completed(futures):
-            print(fut.result())
+        for future in as_completed(future_to_device):
+            device_id = future_to_device[future]
+            try:
+                result = future.result()
+                print(result)
+            except Exception as exc:
+                print(f"[{device_id}] Generated an exception: {exc}")
 
-os.unlink(local_script_path)
-print("All start commands dispatched.")
+    print("XMRIG mining started on all devices. Check the devices to see the progress.")
