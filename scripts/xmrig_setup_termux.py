@@ -1,4 +1,7 @@
-import os, time, subprocess, tempfile
+import os
+import time
+import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ADB = os.environ.get("adb_path", "adb")
@@ -7,6 +10,7 @@ devices = os.environ.get("devices", "").split()
 install_script_content = r'''#!/data/data/com.termux/files/usr/bin/bash
 set -e
 
+# Correct Termux home
 export HOME="/data/data/com.termux/files/home"
 LOG="$HOME/xmrig_build.log"
 
@@ -17,10 +21,10 @@ echo "[*] Using HOME=$HOME" | tee -a "$LOG"
 
 echo "[*] Updating Termux packages..." | tee -a "$LOG"
 yes '' | pkg upgrade -y 2>&1 | tee -a "$LOG" || true
-pkg update -y 2>&1 | tee -a "$LOG"
+pkg update -y 2>&1 | tee -a "$LOG" || true
 
 echo "[*] Installing dependencies..." | tee -a "$LOG"
-pkg install -y clang make cmake git libuv openssl 2>&1 | tee -a "$LOG"
+pkg install -y clang make cmake git libuv openssl 2>&1 | tee -a "$LOG" || true
 
 cd "$HOME"
 
@@ -44,10 +48,16 @@ echo "[*] Building xmrig..." | tee -a "$LOG"
 make -j"$(nproc)" 2>&1 | tee -a "$LOG"
 
 if [ -x "$HOME/xmrig/build/xmrig" ]; then
-  echo "[OK] xmrig binary built!" | tee -a "$LOG"
+  echo "[OK] xmrig binary built in build/ directory" | tee -a "$LOG"
   ls -l "$HOME/xmrig/build/xmrig" | tee -a "$LOG"
+
+  echo "[*] Installing xmrig into top-level xmrig directory..." | tee -a "$LOG"
+  cp "$HOME/xmrig/build/xmrig" "$HOME/xmrig/xmrig"
+  chmod +x "$HOME/xmrig/xmrig"
+  ls -l "$HOME/xmrig/xmrig" | tee -a "$LOG"
+  echo "[OK] You can now run: cd ~/xmrig && ./xmrig ..." | tee -a "$LOG"
 else
-  echo "[ERROR] Binary not found after build" | tee -a "$LOG"
+  echo "[ERROR] xmrig binary not found after build" | tee -a "$LOG"
 fi
 
 echo "===== XMRIG INSTALL END $(date) =====" | tee -a "$LOG"
@@ -57,26 +67,46 @@ def install_on_device(device_id, script_path):
     try:
         print(f"[{device_id}] Starting xmrig installer...")
 
-        subprocess.run(f"{ADB} -s {device_id} shell am force-stop com.termux", shell=True)
+        # Stop Termux so it comes up clean
+        subprocess.run(
+            f"{ADB} -s {device_id} shell am force-stop com.termux",
+            shell=True
+        )
         time.sleep(1)
 
         remote = "/data/local/tmp/xmrig_install.sh"
         print(f"[{device_id}] Uploading script...")
-        subprocess.run(f'{ADB} -s {device_id} push "{script_path}" "{remote}"', shell=True, check=True)
-        subprocess.run(f"{ADB} -s {device_id} shell chmod 755 {remote}", shell=True, check=True)
+        subprocess.run(
+            f'{ADB} -s {device_id} push "{script_path}" "{remote}"',
+            shell=True,
+            check=True,
+        )
+        subprocess.run(
+            f"{ADB} -s {device_id} shell chmod 755 {remote}",
+            shell=True,
+            check=True,
+        )
 
         print(f"[{device_id}] Launching Termux...")
         subprocess.run(
-            f"{ADB} -s {device_id} shell am start -n com.termux/com.termux.app.TermuxActivity",
-            shell=True
+            f"{ADB} -s {device_id} shell "
+            "am start -n com.termux/com.termux.app.TermuxActivity",
+            shell=True,
         )
         time.sleep(3)
 
+        # Cellhasher convention: %s becomes a space in Termux input
         cmd = "bash%s/data/local/tmp/xmrig_install.sh"
         print(f"[{device_id}] Executing script inside Termux...")
-        subprocess.run(f'{ADB} -s {device_id} shell input text "{cmd}"', shell=True)
+        subprocess.run(
+            f'{ADB} -s {device_id} shell input text "{cmd}"',
+            shell=True,
+        )
         time.sleep(1)
-        subprocess.run(f"{ADB} -s {device_id} shell input keyevent 66", shell=True)
+        subprocess.run(
+            f"{ADB} -s {device_id} shell input keyevent 66",
+            shell=True,
+        )
 
         print(f"[{device_id}] Install started.")
         return f"[{device_id}] OK"
@@ -84,7 +114,14 @@ def install_on_device(device_id, script_path):
     except Exception as e:
         return f"[{device_id}] ERROR: {e}"
 
-with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", delete=False, suffix=".sh") as f:
+# Write the bash script out with LF endings
+with tempfile.NamedTemporaryFile(
+    mode="w",
+    encoding="utf-8",
+    newline="\n",
+    delete=False,
+    suffix=".sh",
+) as f:
     f.write(install_script_content)
     local_script_path = f.name
 
@@ -95,7 +132,10 @@ else:
     print("=== Deploying XMRIG Installers ===")
 
     with ThreadPoolExecutor(max_workers=max(1, len(devices))) as executor:
-        futures = {executor.submit(install_on_device, d, local_script_path): d for d in devices}
+        futures = {
+            executor.submit(install_on_device, d, local_script_path): d
+            for d in devices
+        }
         for fut in as_completed(futures):
             print(fut.result())
 
