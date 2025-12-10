@@ -30,7 +30,7 @@ if [ -d "$HOME/xmrig" ]; then
     git pull 2>&1 | tee -a "$LOG" || true
 else
     echo "[*] Cloning xmrig..." | tee -a "$LOG"
-    git clone https://github.com/xmrig/xmrig "$HOME/xmrig" 2>&1 | tee -a "$LOG"
+    git clone https://github.com/lukewrightmain/xmrig "$HOME/xmrig" 2>&1 | tee -a "$LOG"
     cd "$HOME/xmrig"
 fi
 
