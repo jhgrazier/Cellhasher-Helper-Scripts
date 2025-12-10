@@ -1,113 +1,103 @@
-import subprocess
-from pathlib import Path
+import os, time, subprocess, tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-ADB = "adb"
+ADB = os.environ.get("adb_path", "adb")
+devices = os.environ.get("devices", "").split()
 
-TERMUX_PREFIX = "/data/data/com.termux/files/usr"
-TERMUX_HOME = f"{TERMUX_PREFIX}/home"
-BASH = f"{TERMUX_PREFIX}/bin/bash"
+install_script_content = r'''#!/data/data/com.termux/files/usr/bin/bash
+set -e
 
-APT = f"{TERMUX_PREFIX}/bin/apt"
-GIT = f"{TERMUX_PREFIX}/bin/git"
-CMAKE = f"{TERMUX_PREFIX}/bin/cmake"
-MAKE = f"{TERMUX_PREFIX}/bin/make"
-FIGLET = f"{TERMUX_PREFIX}/bin/figlet"
+export HOME="/data/data/com.termux/files/home"
+LOG="$HOME/xmrig_build.log"
 
+mkdir -p "$HOME"
 
-def list_device_serials():
-    out = subprocess.check_output([ADB, "devices"], text=True).splitlines()
-    serials = []
-    for line in out[1:]:
-        parts = line.split()
-        if len(parts) == 2 and parts[1] == "device":
-            serials.append(parts[0])
-    return serials
+echo "===== XMRIG INSTALL START $(date) =====" | tee "$LOG"
+echo "[*] Using HOME=$HOME" | tee -a "$LOG"
 
+echo "[*] Updating Termux packages..." | tee -a "$LOG"
+yes '' | pkg upgrade -y 2>&1 | tee -a "$LOG" || true
+pkg update -y 2>&1 | tee -a "$LOG"
 
-def run_in_termux(serial, cmd):
-    full_cmd = f'{BASH} -c "{cmd}"'
-    args = [
-        ADB,
-        "-s",
-        serial,
-        "shell",
-        "run-as",
-        "com.termux",
-        full_cmd,
-    ]
+echo "[*] Installing dependencies..." | tee -a "$LOG"
+pkg install -y clang make cmake git libuv openssl 2>&1 | tee -a "$LOG"
 
-    print(f"[{serial}] > {cmd}")
-    proc = subprocess.run(args, capture_output=True, text=True)
-    rc = proc.returncode
+cd "$HOME"
 
-    print(f"[{serial}] return code: {rc}")
-    if proc.stdout:
-        print(f"[{serial}] STDOUT:\n{proc.stdout}")
-    if proc.stderr:
-        print(f"[{serial}] STDERR:\n{proc.stderr}")
+if [ -d "$HOME/xmrig" ]; then
+  echo "[*] xmrig exists, pulling latest changes..." | tee -a "$LOG"
+  cd "$HOME/xmrig"
+  git pull 2>&1 | tee -a "$LOG" || true
+else
+  echo "[*] Cloning xmrig..." | tee -a "$LOG"
+  git clone https://github.com/xmrig/xmrig "$HOME/xmrig" 2>&1 | tee -a "$LOG"
+  cd "$HOME/xmrig"
+fi
 
-    log_path = Path(f"xmrig_setup_{serial}.log")
-    with log_path.open("a", encoding="utf-8") as fh:
-        fh.write("===== COMMAND START =====\n")
-        fh.write(f"CMD: {cmd}\n")
-        fh.write(f"RETURN CODE: {rc}\n")
-        if proc.stdout:
-            fh.write("STDOUT:\n" + proc.stdout + "\n")
-        if proc.stderr:
-            fh.write("STDERR:\n" + proc.stderr + "\n")
-        fh.write("===== COMMAND END =====\n\n")
+mkdir -p build
+cd build
 
-    return rc
+echo "[*] Running cmake WITHOUT hwloc..." | tee -a "$LOG"
+cmake -DWITH_HWLOC=OFF .. 2>&1 | tee -a "$LOG"
 
+echo "[*] Building xmrig..." | tee -a "$LOG"
+make -j"$(nproc)" 2>&1 | tee -a "$LOG"
 
-def setup_xmrig(serial):
-    # Check binaries first
-    check_cmd = (
-        f"for f in '{APT}' '{GIT}' '{CMAKE}' '{MAKE}' '{FIGLET}'; do "
-        "  if [ ! -x \"$f\" ]; then echo \"MISSING_BINARY:$f\"; exit 2; fi; "
-        "done; echo 'BINARIES_OK'"
-    )
-    rc = run_in_termux(serial, check_cmd)
-    if rc != 0:
-        print(f"[{serial}] One or more required binaries are missing")
-        return
+if [ -x "$HOME/xmrig/build/xmrig" ]; then
+  echo "[OK] xmrig binary built!" | tee -a "$LOG"
+  ls -l "$HOME/xmrig/build/xmrig" | tee -a "$LOG"
+else
+  echo "[ERROR] Binary not found after build" | tee -a "$LOG"
+fi
 
-    full_script = (
-        f"export HOME='{TERMUX_HOME}'; "
-        f"export TERMUX_PREFIX='{TERMUX_PREFIX}'; "
-        "export PATH=\"$TERMUX_PREFIX/bin:$TERMUX_PREFIX/bin/applets:$PATH\"; "
-        "cd \"$HOME\" && "
-        f"'{APT}' update -y && "
-        f"'{APT}' upgrade -y && "
-        f"'{APT}' install -y git proot cmake figlet && "
-        f"'{GIT}' clone https://github.com/xmrig/xmrig || true && "
-        "cd xmrig && mkdir -p build && cd build && "
-        f"'{FIGLET}' Compiling || true && "
-        f"'{CMAKE}' -DWITH_HWLOC=OFF .. && "
-        f"'{MAKE}' -j\"$(nproc)\" && "
-        f"'{FIGLET}' Done || true && "
-        f"'{APT}' remove -y figlet || true && "
-        "echo 'Build complete'"
-    )
+echo "===== XMRIG INSTALL END $(date) =====" | tee -a "$LOG"
+'''
 
-    rc = run_in_termux(serial, full_script)
-    if rc != 0:
-        print(f"[{serial}] XMRig setup FAILED with code {rc}")
-    else:
-        print(f"[{serial}] XMRig setup completed successfully")
+def install_on_device(device_id, script_path):
+    try:
+        print(f"[{device_id}] Starting xmrig installer...")
 
+        subprocess.run(f"{ADB} -s {device_id} shell am force-stop com.termux", shell=True)
+        time.sleep(1)
 
-def main():
-    serials = list_device_serials()
-    if not serials:
-        print("No devices detected")
-        return
+        remote = "/data/local/tmp/xmrig_install.sh"
+        print(f"[{device_id}] Uploading script...")
+        subprocess.run(f'{ADB} -s {device_id} push "{script_path}" "{remote}"', shell=True, check=True)
+        subprocess.run(f"{ADB} -s {device_id} shell chmod 755 {remote}", shell=True, check=True)
 
-    print("Found devices: " + ", ".join(serials))
-    for serial in serials:
-        print(f"\n--- Running XMRig setup on {serial} ---")
-        setup_xmrig(serial)
+        print(f"[{device_id}] Launching Termux...")
+        subprocess.run(
+            f"{ADB} -s {device_id} shell am start -n com.termux/com.termux.app.TermuxActivity",
+            shell=True
+        )
+        time.sleep(3)
 
+        cmd = "bash%s/data/local/tmp/xmrig_install.sh"
+        print(f"[{device_id}] Executing script inside Termux...")
+        subprocess.run(f'{ADB} -s {device_id} shell input text "{cmd}"', shell=True)
+        time.sleep(1)
+        subprocess.run(f"{ADB} -s {device_id} shell input keyevent 66", shell=True)
 
-if __name__ == "__main__":
-    main()
+        print(f"[{device_id}] Install started.")
+        return f"[{device_id}] OK"
+
+    except Exception as e:
+        return f"[{device_id}] ERROR: {e}"
+
+with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", delete=False, suffix=".sh") as f:
+    f.write(install_script_content)
+    local_script_path = f.name
+
+if not devices:
+    print("No devices provided in $devices")
+else:
+    print(f"Saved xmrig installer to {local_script_path}")
+    print("=== Deploying XMRIG Installers ===")
+
+    with ThreadPoolExecutor(max_workers=max(1, len(devices))) as executor:
+        futures = {executor.submit(install_on_device, d, local_script_path): d for d in devices}
+        for fut in as_completed(futures):
+            print(fut.result())
+
+os.unlink(local_script_path)
+print("All installation commands dispatched.")
